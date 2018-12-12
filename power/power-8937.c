@@ -30,6 +30,7 @@
 #define LOG_NIDEBUG 0
 
 #include <errno.h>
+#include <time.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -51,8 +52,6 @@
 static int saved_interactive_mode = -1;
 static int display_hint_sent;
 static int video_encode_hint_sent;
-
-extern void interaction(int duration, int num_args, int opt_list[]);
 
 static int current_power_profile = PROFILE_BALANCED;
 
@@ -189,32 +188,44 @@ static void process_video_encode_hint(void *metadata)
     }
 }
 
-int power_hint_override(power_hint_t hint, void *data)
+static void process_activity_launch_hint(void *UNUSED(data))
 {
-    int duration, duration_hint;
+    perf_hint_enable_with_type(VENDOR_HINT_FIRST_LAUNCH_BOOST, -1, LAUNCH_BOOST_V1);
+}
+
+static void process_interaction_hint(void *data)
+{
     static struct timespec s_previous_boost_timespec;
+    static int s_previous_duration = 0;
+
     struct timespec cur_boost_timespec;
     long long elapsed_time;
-    int resources_launch_main[] = {
-        SCHED_BOOST_ON_V3, 0x1,
-        MIN_FREQ_BIG_CORE_0, 0x5DC,
-        ALL_CPUS_PWR_CLPS_DIS_V3, 0x1,
-        CPUS_ONLINE_MIN_BIG, 0x4,
-        GPU_MIN_PWRLVL_BOOST, 0x1,
-    };
+    int duration = 500;  // 500 ms by default
 
-    int resources_launch_packing[] = {
-        SCHED_PREFER_IDLE_DIS_V3, 0x1,
-        SCHED_SMALL_TASK_DIS, 0x1,
-        SCHED_IDLE_NR_RUN_DIS, 0x1,
-        SCHED_IDLE_LOAD_DIS, 0x1,
-    };
+    if (data) {
+        int input_duration = *((int*)data);
+        if (input_duration > duration) {
+            duration = (input_duration > 5000) ? 5000 : input_duration;
+        }
+    }
 
-    int resources_interaction_fling_boost[] = {
-        MIN_FREQ_BIG_CORE_0, 0x514,
-        SCHED_BOOST_ON_V3, 0x1,
-    };
+    clock_gettime(CLOCK_MONOTONIC, &cur_boost_timespec);
 
+    elapsed_time = calc_timespan_us(s_previous_boost_timespec, cur_boost_timespec);
+    // don't hint if previous hint's duration covers this hint's duration
+    if ((s_previous_duration * 1000) > (elapsed_time + duration * 1000)) {
+        return;
+    }
+    s_previous_boost_timespec = cur_boost_timespec;
+    s_previous_duration = duration;
+
+    if (duration >= 1500) {
+        perf_hint_enable_with_type(VENDOR_HINT_SCROLL_BOOST, duration, SCROLL_VERTICAL);
+    }
+}
+
+int power_hint_override(power_hint_t hint, void *data)
+{
     if (hint == POWER_HINT_SET_PROFILE) {
         set_power_profile(*(int32_t *)data);
         return HINT_HANDLED;
@@ -228,39 +239,10 @@ int power_hint_override(power_hint_t hint, void *data)
 
     switch (hint) {
     	case POWER_HINT_INTERACTION:
-            duration = 500;
-            duration_hint = 0;
-
-            if (data) {
-                duration_hint = *((int *)data);
-            }
-
-            duration = duration_hint > 0 ? duration_hint : 500;
-
-            clock_gettime(CLOCK_MONOTONIC, &cur_boost_timespec);
-            elapsed_time = calc_timespan_us(s_previous_boost_timespec, cur_boost_timespec);
-            if (elapsed_time > 750000)
-                elapsed_time = 750000;
-            // don't hint if it's been less than 250ms since last boost
-            // also detect if we're doing anything resembling a fling
-            // support additional boosting in case of flings
-            else if (elapsed_time < 250000 && duration <= 750)
-                return HINT_HANDLED;
-
-            s_previous_boost_timespec = cur_boost_timespec;
-
-            if (duration >= 1500) {
-                interaction(duration, ARRAY_SIZE(resources_interaction_fling_boost),
-                        resources_interaction_fling_boost);
-            }
+            process_interaction_hint(data);
             return HINT_HANDLED;
         case POWER_HINT_LAUNCH:
-            duration = 2000;
-            interaction(duration, ARRAY_SIZE(resources_launch_main),
-                    resources_launch_main);
-            duration = 5000;
-            interaction(duration, ARRAY_SIZE(resources_launch_packing),
-                    resources_launch_packing);
+            process_activity_launch_hint(data);
             return HINT_HANDLED;
         case POWER_HINT_VIDEO_ENCODE:
             process_video_encode_hint(data);
