@@ -26,10 +26,10 @@
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-function configure_read_ahead_kb_values() {
-    MemTotalStr=`cat /proc/meminfo | grep MemTotal`
-    MemTotal=${MemTotalStr:16:8}
+MemTotalStr=`cat /proc/meminfo | grep MemTotal`
+MemTotal=${MemTotalStr:16:8}
 
+function configure_read_ahead_kb_values() {
     # Set 128 for <= 3GB &
     # set 512 for >= 4GB targets.
     if [ $MemTotal -le 3145728 ]; then
@@ -93,6 +93,11 @@ function configure_memory_parameters() {
     #Enable oom_reaper
     if [ -f /sys/module/lowmemorykiller/parameters/oom_reaper ]; then
         echo 1 > /sys/module/lowmemorykiller/parameters/oom_reaper
+    fi
+
+    # Don't account allocstalls for <= 2GB RAM targets
+    if [ $MemTotal -le 2097152 ]; then
+        echo 100 > /sys/module/vmpressure/parameters/allocstall_threshold
     fi
 
     configure_read_ahead_kb_values
